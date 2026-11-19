@@ -24,6 +24,7 @@ export type PaymentRecord = {
   payment_method: string;
   submitted_at: string;
   status: PaymentStatus;
+  transaction_ref?: string;
   approved_by?: string | null;
   decision_note?: string | null;
 };
@@ -92,7 +93,7 @@ export async function hydrateStateFromSupabase() {
         approved_by: payment.approved_by ?? null,
         decision_note: payment.decision_note ?? null,
         transaction_ref: payment.transaction_ref
-      } as PaymentRecord & { transaction_ref: string }));
+      }) as PaymentRecord & { transaction_ref: string });
     }
 
     if (subscriptionsResult.data) {

@@ -1,3 +1,4 @@
+
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireAdminAuth } from '../middleware/adminAuth.js';
@@ -6,14 +7,11 @@ import {
   notifyTelegramAdmins,
   updatePaymentDecision
 } from '../lib/management.js';
+import { verifyTelegramInitData } from '../lib/telegramAuth.js';
 
 export const paymentsRouter = Router();
 
 const paymentSubmitSchema = z.object({
-  telegramId: z.coerce.number().int().positive(),
-  username: z.string().optional().nullable(),
-  firstName: z.string().optional().nullable(),
-  lastName: z.string().optional().nullable(),
   plan: z.string().min(1),
   amount: z.coerce.number().min(1),
   paymentMethod: z.string().min(1),
@@ -26,6 +24,29 @@ const paymentDecisionSchema = z.object({
 });
 
 paymentsRouter.post('/submit', async (req, res) => {
+  const authHeader = req.header('authorization') ?? '';
+
+  if (!authHeader.startsWith('tma ')) {
+    return res.status(401).json({
+      ok: false,
+      error: 'Telegram authentication is required. Reopen NEXBOOST from Telegram.'
+    });
+  }
+
+  let telegramUser;
+
+  try {
+    const initData = authHeader.slice(4);
+    telegramUser = verifyTelegramInitData(initData);
+  } catch (error) {
+    return res.status(401).json({
+      ok: false,
+      error: error instanceof Error
+        ? error.message
+        : 'Telegram authentication failed.'
+    });
+  }
+
   const parsed = paymentSubmitSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -37,10 +58,10 @@ paymentsRouter.post('/submit', async (req, res) => {
 
   try {
     const result = await createPaymentSubmission({
-      telegramId: parsed.data.telegramId,
-      username: parsed.data.username ?? null,
-      firstName: parsed.data.firstName ?? null,
-      lastName: parsed.data.lastName ?? null,
+      telegramId: telegramUser.id,
+      username: telegramUser.username ?? null,
+      firstName: telegramUser.first_name ?? null,
+      lastName: telegramUser.last_name ?? null,
       plan: parsed.data.plan,
       amount: parsed.data.amount,
       paymentMethod: parsed.data.paymentMethod,
@@ -48,9 +69,11 @@ paymentsRouter.post('/submit', async (req, res) => {
       paymentProof: parsed.data.paymentProof ?? null
     });
 
-    await notifyTelegramAdmins(
-      `New payment submitted by @${parsed.data.username ?? 'customer'} for ${parsed.data.plan}.\nAmount: ${parsed.data.amount} ETB\nMethod: ${parsed.data.paymentMethod}\nReference: ${parsed.data.transactionRef}`
-    );
+    if (!result.duplicate) {
+      await notifyTelegramAdmins(
+        `New payment submitted by @${telegramUser.username ?? 'customer'} for ${parsed.data.plan}.\nAmount: ${parsed.data.amount} ETB\nMethod: ${parsed.data.paymentMethod}\nReference: ${parsed.data.transactionRef}`
+      );
+    }
 
     return res.json({
       ok: true,
@@ -61,7 +84,9 @@ paymentsRouter.post('/submit', async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      error: error instanceof Error ? error.message : 'Unable to submit payment.'
+      error: error instanceof Error
+        ? error.message
+        : 'Unable to submit payment.'
     });
   }
 });
@@ -77,7 +102,19 @@ paymentsRouter.post('/:id/decision', requireAdminAuth, async (req, res) => {
   }
 
   try {
-    const result = await updatePaymentDecision(req.params.id, parsed.data.decision, req.admin?.username ?? 'admin');
+    const adminRequest = req as typeof req & {
+      admin?: { username?: string };
+    };
+
+    const paymentId = Array.isArray(req.params.id)
+      ? req.params.id[0]
+      : req.params.id;
+
+    const result = await updatePaymentDecision(
+      paymentId,
+      parsed.data.decision,
+      adminRequest.admin?.username ?? 'admin'
+    );
 
     return res.json({
       ok: true,
@@ -87,7 +124,9 @@ paymentsRouter.post('/:id/decision', requireAdminAuth, async (req, res) => {
   } catch (error) {
     return res.status(400).json({
       ok: false,
-      error: error instanceof Error ? error.message : 'Failed to update payment decision.'
+      error: error instanceof Error
+        ? error.message
+        : 'Failed to update payment decision.'
     });
   }
 });
